@@ -4,14 +4,10 @@
 import { getQueue, removeFromQueue, updateCallStatus } from "@/db/queries"
 import { publishCallUpdate, publishQueueUpdate } from "@/lib/ably"
 import { Twilio } from "twilio"
-import { NextRequest, NextResponse } from "next/server"
 
-const client = new Twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-)
+const client = new Twilio(process.env.TWILIO_SID!, process.env.TWILIO_TOKEN!)
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
     const {
       action,
@@ -25,7 +21,7 @@ export async function POST(req: NextRequest) {
 
     switch (action) {
       case "answer":
-        await answerCall(callSid, callData)
+        await answerCall(callSid, undefined)
         break
       case "decline":
         await declineCall(callSid)
@@ -37,22 +33,19 @@ export async function POST(req: NextRequest) {
         await endCall(callSid)
         break
       default:
-        return NextResponse.json({ error: "Invalid action" }, { status: 400 })
+        return Response.json({ error: "Invalid action" }, { status: 400 })
     }
 
-    return NextResponse.json({ message: "Action completed" })
+    return Response.json({ message: "Action completed" })
   } catch (error) {
     console.error("Error in call control:", error)
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    )
+    return Response.json({ error: "Internal server error" }, { status: 500 })
   }
 }
 
 async function answerCall(callSid: string, callData: any) {
   // 1. Remove from queue in DB
-  await removeFromQueue(callSid)
+  //   await removeFromQueue(callSid)
 
   // 3. Get updated queue
   const queue = await getQueue()
@@ -76,7 +69,7 @@ async function declineCall(callSid: string) {
 
 async function holdCall(callSid: string) {
   // 1. Update status in DB
-  await updateCallStatus(callSid, "in_progress")
+  await updateCallStatus(callSid, "on_hold")
 
   // 3. Publish update
   await publishCallUpdate({ callSid, status: "on-hold" })

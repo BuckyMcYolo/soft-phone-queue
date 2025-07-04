@@ -47,16 +47,18 @@ export const removeFromQueue = async (callSid: string) => {
 // Update call status
 export const updateCallStatus = async (
   callSid: string,
-  status: "queued" | "in_progress" | "completed" | "failed"
+  status: "queued" | "in_progress" | "completed" | "failed" | "on_hold"
 ) => {
-  const result = await db
+  const [result] = await db
     .update(callQueue)
     .set({ status })
     .where(eq(callQueue.callSid, callSid))
-    .returning()
+    .returning({ id: callQueue.id })
 
-  if (!result || result.length === 0) {
+  console.log("Update call status result:", result)
+
+  if (!result) {
     throw new Error("Failed to update call status")
   }
-  return result[0]
+  return result
 }

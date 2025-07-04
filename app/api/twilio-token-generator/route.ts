@@ -3,6 +3,7 @@ const accountSid = process.env.TWILIO_SID
 const authToken = process.env.TWILIO_TOKEN
 const apiSID = process.env.TWILIO_API_KEY_SID
 const apiSecret = process.env.TWILIO_API_KEY_SECRET
+const twimlSid = process.env.TWIML_APP_SID
 
 import twilio from "twilio"
 
@@ -15,7 +16,7 @@ export async function GET() {
   }
   try {
     const voiceGrant = new VoiceGrant({
-      outgoingApplicationSid: process.env.TWILIO_SID,
+      outgoingApplicationSid: twimlSid,
       incomingAllow: true,
     })
 

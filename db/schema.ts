@@ -11,6 +11,7 @@ export const callStatusEnum = pgEnum("call_status", [
   "in_progress",
   "completed",
   "failed",
+  "on_hold",
 ])
 
 export const callQueue = pgTable("call_queue", {

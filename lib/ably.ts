@@ -6,7 +6,7 @@ const ably = new Ably.Realtime({
 })
 
 interface Queue {
-  status: "queued" | "in_progress" | "completed" | "failed"
+  status: "queued" | "in_progress" | "completed" | "failed" | "on_hold"
   id: number
   callSid: string
   callerNumber: string

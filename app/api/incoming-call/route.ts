@@ -28,7 +28,7 @@ export async function POST(request: Request) {
       CallStatus,
     })
 
-    if (To != process.env.TWILIO_NUMBER) {
+    if (To != process.env.NEXT_PUBLIC_TWILIO_NUMBER) {
       return new Response(JSON.stringify({ error: "Invalid number" }), {
         status: 400,
         headers: {
@@ -69,13 +69,18 @@ export async function POST(request: Request) {
 
     const dial = twiml.dial()
 
+    console.log("CONFERENCE SID:", `hold-room-${CallSid}`)
+
     dial.conference(
       {
         waitUrl: "https://twimlets.com/holdmusic?Bucket=com.twilio.music.rock",
         statusCallback: `${process.env.NEXT_PUBLIC_BASE_URL}/api/webhooks/call-status`,
         statusCallbackEvent: ["start", "end", "join", "leave"],
+        startConferenceOnEnter: false,
+        endConferenceOnExit: true,
+        muted: false,
       },
-      `hold-room`
+      `hold-room-${CallSid}`
     )
 
     // 5. Return TwiML response
