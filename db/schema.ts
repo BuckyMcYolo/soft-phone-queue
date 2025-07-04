@@ -1,4 +1,10 @@
-import { integer, pgTable, varchar, pgEnum } from "drizzle-orm/pg-core"
+import {
+  integer,
+  pgTable,
+  varchar,
+  pgEnum,
+  timestamp,
+} from "drizzle-orm/pg-core"
 
 export const callStatusEnum = pgEnum("call_status", [
   "queued",
@@ -9,12 +15,12 @@ export const callStatusEnum = pgEnum("call_status", [
 
 export const callQueue = pgTable("call_queue", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  createdAt: integer("created_at")
+  createdAt: timestamp("created_at")
     .notNull()
-    .$default(() => Date.now()),
-  updatedAt: integer("updated_at")
+    .$defaultFn(() => new Date()),
+  updatedAt: timestamp("updated_at")
     .notNull()
-    .$onUpdate(() => Date.now()),
+    .$onUpdateFn(() => new Date()),
   callSid: varchar("call_sid").notNull().unique(),
   callerNumber: varchar("caller_number").notNull(),
   callerName: varchar("caller_name").notNull(),

@@ -26,9 +26,15 @@ export async function GET() {
 
     accessToken.addGrant(voiceGrant)
 
-    return new Response(accessToken.toJwt(), {
-      headers: { "Content-Type": "application/json" },
-    })
+    return new Response(
+      JSON.stringify({
+        token: accessToken.toJwt(),
+        identity: accessToken.identity,
+      }),
+      {
+        headers: { "Content-Type": "application/json" },
+      }
+    )
   } catch (error) {
     console.error("Error generating Twilio token:", error)
     return new Response("Failed to generate Twilio token", { status: 500 })

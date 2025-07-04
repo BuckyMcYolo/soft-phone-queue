@@ -10,17 +10,19 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react"
-// import * as Ably from "ably"
 import { useChannel, useConnectionStateListener } from "ably/react"
 import { Button } from "@/components/ui/button"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { Device, Call } from "@twilio/voice-sdk"
+import { Device } from "@twilio/voice-sdk"
+
 interface Caller {
   id: number
-  number: string
-  name: string
+  callSid: string
+  callerNumber: string
+  callerName: string
+  status: "waiting" | "on-hold" | "in_progress"
+  joinedAt: string
   waitTime: string
-  status: "waiting" | "on-hold"
 }
 
 interface TwilioToken {
@@ -28,127 +30,343 @@ interface TwilioToken {
   identity: string
 }
 
+interface CallQueue {
+  id: number
+  status: "failed" | "queued" | "in_progress" | "completed"
+  createdAt: string
+  updatedAt: string
+  callSid: string
+  callerNumber: string
+  callerName: string
+}
+
 const SoftPhoneApp = () => {
   const [isWSConnected, setIsWSConnected] = useState(false)
   const [currentCall, setCurrentCall] = useState<Caller | null>(null)
-  const [callQueue, setCallQueue] = useState<Caller[]>([
-    {
-      id: 1,
-      number: "+1-555-0123",
-      name: "John Smith",
-      waitTime: "2:34",
-      status: "waiting",
-    },
-    {
-      id: 2,
-      number: "+1-555-0456",
-      name: "Sarah Johnson",
-      waitTime: "1:12",
-      status: "waiting",
-    },
-    {
-      id: 3,
-      number: "+1-555-0789",
-      name: "Mike Davis",
-      waitTime: "0:45",
-      status: "waiting",
-    },
-  ])
+  const [callQueue, setCallQueue] = useState<Caller[]>([])
   const [isMuted, setIsMuted] = useState(false)
   const [isOnHold, setIsOnHold] = useState(false)
   const [incomingCall, setIncomingCall] = useState<Caller | null>(null)
   const [twiloDevice, setTwiloDevice] = useState<Device | null>(null)
+  const [activeConnection, setActiveConnection] = useState<any>(null)
+
+  const queryClient = useQueryClient()
 
   useConnectionStateListener("connected", () => {
     console.log("Connected to Ably!")
     setIsWSConnected(true)
   })
 
-  const { channel } = useChannel("soft-phone-queue", "main", (message) => {
-    // setMessages((previousMessages) => [...previousMessages, message])
-    console.log("Received message:", message)
+  // Ably real-time message handling
+  const { channel } = useChannel(
+    process.env.NEXT_PUBLIC_ABLY_CHANNEL!,
+    (message) => {
+      console.log("Received Ably message:", message)
+
+      switch (message.name) {
+        case "queue-updated":
+          handleQueueUpdate(message.data.queue)
+          break
+        case "incoming-call":
+          handleIncomingCall(message.data.caller)
+          break
+        case "call-updated":
+          handleCallUpdate(message.data.call)
+          break
+        default:
+          console.log("Unknown message type:", message.name)
+      }
+    }
+  )
+
+  const { data: dataToken } = useQuery<TwilioToken>({
+    queryKey: ["twilio-token"],
+    queryFn: async (): Promise<{
+      token: string
+      identity: string
+    }> => {
+      const response = await fetch("/api/twilio-token-generator")
+      if (!response.ok) {
+        throw new Error("Failed to fetch Twilio token")
+      }
+      return response.json()
+    },
+    staleTime: Infinity,
+    retry: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+    refetchInterval: false,
+    refetchIntervalInBackground: false,
   })
 
-  const { data: dataToken, isLoading: dataTokenLoading } =
-    useQuery<TwilioToken>({
-      queryKey: ["twilio-token"],
-      queryFn: async (): Promise<{
-        token: string
-        identity: string
-      }> => {
-        const response = await fetch("/api/twilio-token-generator")
-        if (!response.ok) {
-          throw new Error("Failed to fetch Twilio token")
-        }
-        return response.json()
-      },
-      // staleTime: Infinity,
-      // retry: false,
-      // refetchOnReconnect: false,
-      // refetchOnWindowFocus: false,
-      // refetchInterval: false,
-      // refetchIntervalInBackground: false,
-    })
+  const { data: queueData, isLoading: isQueueLoading } = useQuery<CallQueue[]>({
+    queryKey: ["queue"],
+    queryFn: async () => {
+      const response = await fetch("/api/queue")
+      if (!response.ok) {
+        throw new Error("Failed to fetch queue")
+      }
+      return response.json()
+    },
+    refetchInterval: 5000, // Fallback polling every 5 seconds
+  })
 
-  const queryClient = useQueryClient()
-
+  // Initialize Twilio Device
   useEffect(() => {
     if (dataToken) {
-      console.log("token retrieved")
+      console.log("Initializing Twilio Device")
       const device = new Device(dataToken.token)
-      // startUpClient(device)
+
+      // Set up device event listeners
+      device.on("ready", () => {
+        console.log("Twilio Device ready")
+      })
+
+      device.on("error", (error) => {
+        console.error("Twilio Device error:", error)
+      })
+
+      device.on("incoming", (conn) => {
+        console.log("Incoming call received:", conn)
+        setActiveConnection(conn)
+        // Handle incoming call if needed
+      })
+
+      device.on("connect", (conn) => {
+        console.log("Call connected:", conn)
+        setActiveConnection(conn)
+      })
+
+      device.on("disconnect", (conn) => {
+        console.log("Call disconnected:", conn)
+        setActiveConnection(null)
+      })
+
       setTwiloDevice(device)
+
+      // Cleanup function
+      return () => {
+        if (device) {
+          device.destroy()
+        }
+        setActiveConnection(null)
+      }
     }
   }, [dataToken])
 
-  // useEffect(() => {
-  //   const timer = setTimeout(() => {
-  //     if (!currentCall && callQueue.length > 0) {
-  //       setIncomingCall(callQueue[0])
-  //     }
-  //   }, 2000)
-  //   return () => clearTimeout(timer)
-  // }, [currentCall, callQueue])
+  // Transform backend data to frontend format
+  useEffect(() => {
+    if (queueData) {
+      const transformedQueue = queueData
+        .filter((item) => item.status === "queued")
+        .map((item) => ({
+          id: item.id,
+          callSid: item.callSid,
+          callerNumber: item.callerNumber,
+          callerName: item.callerName,
+          status: "waiting" as const,
+          joinedAt: item.createdAt,
+          waitTime: calculateWaitTime(item.createdAt),
+        }))
 
-  const answerCall = (caller: Caller) => {
-    setCurrentCall(caller)
-    setIncomingCall(null)
-    setCallQueue((prev) => prev.filter((c) => c.id !== caller.id))
+      setCallQueue(transformedQueue)
+    }
+  }, [queueData])
+
+  // Calculate wait time based on when they joined
+  const calculateWaitTime = (joinedAt: string): string => {
+    const now = new Date()
+    const joined = new Date(joinedAt)
+    const diffInSeconds = Math.floor((now.getTime() - joined.getTime()) / 1000)
+
+    const minutes = Math.floor(diffInSeconds / 60)
+    const seconds = diffInSeconds % 60
+
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`
   }
 
-  const declineCall = (caller: Caller) => {
-    setIncomingCall(null)
-    setCallQueue((prev) => prev.filter((c) => c.id !== caller.id))
+  // Update wait times every second
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCallQueue((prev) =>
+        prev.map((caller) => ({
+          ...caller,
+          waitTime: calculateWaitTime(caller.joinedAt),
+        }))
+      )
+    }, 1000)
+
+    return () => clearInterval(interval)
+  }, [])
+
+  // Ably message handlers
+  const handleQueueUpdate = (queue: CallQueue[]) => {
+    console.log("Queue updated:", queue)
+    queryClient.invalidateQueries({ queryKey: ["queue"] })
   }
 
-  const endCall = () => {
-    setCurrentCall(null)
-    setIsOnHold(false)
-    setIsMuted(false)
+  const handleIncomingCall = (caller: any) => {
+    console.log("Incoming call:", caller)
+    const incomingCaller: Caller = {
+      id: caller.id,
+      callSid: caller.callSid,
+      callerNumber: caller.callerNumber,
+      callerName: caller.callerName,
+      status: "waiting",
+      joinedAt: caller.joinedAt || new Date().toISOString(),
+      waitTime: "0:00",
+    }
+    setIncomingCall(incomingCaller)
+    queryClient.invalidateQueries({ queryKey: ["queue"] })
   }
 
-  const toggleMute = () => {
-    setIsMuted(!isMuted)
+  const handleCallUpdate = (call: any) => {
+    console.log("Call updated:", call)
+    if (call === null) {
+      setCurrentCall(null)
+      setIsOnHold(false)
+      setIsMuted(false)
+    } else {
+      setCurrentCall(call)
+    }
   }
 
-  const toggleHold = () => {
-    setIsOnHold(!isOnHold)
+  // Call control functions
+  const answerCall = async (caller: Caller) => {
+    try {
+      const response = await fetch("/api/call-control", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "answer",
+          callSid: caller.callSid,
+          callData: caller,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error("Failed to answer call")
+      }
+
+      setCurrentCall(caller)
+      setIncomingCall(null)
+      setCallQueue((prev) => prev.filter((c) => c.callSid !== caller.callSid))
+    } catch (error) {
+      console.error("Error answering call:", error)
+    }
   }
 
-  const switchToCall = (caller: Caller) => {
+  const declineCall = async (caller: Caller) => {
+    try {
+      const response = await fetch("/api/call-control", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "decline",
+          callSid: caller.callSid,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error("Failed to decline call")
+      }
+
+      setIncomingCall(null)
+      setCallQueue((prev) => prev.filter((c) => c.callSid !== caller.callSid))
+    } catch (error) {
+      console.error("Error declining call:", error)
+    }
+  }
+
+  const endCall = async () => {
+    if (!currentCall) return
+
+    try {
+      const response = await fetch("/api/call-control", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "end",
+          callSid: currentCall.callSid,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error("Failed to end call")
+      }
+
+      setCurrentCall(null)
+      setIsOnHold(false)
+      setIsMuted(false)
+    } catch (error) {
+      console.error("Error ending call:", error)
+    }
+  }
+
+  const toggleMute = async () => {
+    if (activeConnection) {
+      // Use the tracked active connection to mute/unmute
+      if (isMuted) {
+        activeConnection.mute(false)
+      } else {
+        activeConnection.mute(true)
+      }
+      setIsMuted(!isMuted)
+    } else {
+      // Fallback for demo - just toggle UI state
+      setIsMuted(!isMuted)
+    }
+  }
+
+  const toggleHold = async () => {
+    if (!currentCall) return
+
+    try {
+      const response = await fetch("/api/call-control", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "hold",
+          callSid: currentCall.callSid,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error("Failed to hold call")
+      }
+
+      setIsOnHold(!isOnHold)
+    } catch (error) {
+      console.error("Error holding call:", error)
+    }
+  }
+
+  const switchToCall = async (caller: Caller) => {
     if (currentCall) {
+      // Put current call on hold first
+      await toggleHold()
+
+      // Add current call back to queue with hold status
       setCallQueue((prev) => [...prev, { ...currentCall, status: "on-hold" }])
     }
-    setCurrentCall(caller)
-    setCallQueue((prev) => prev.filter((c) => c.id !== caller.id))
-    setIsOnHold(false)
+
+    // Answer the new call
+    await answerCall(caller)
   }
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins}:${secs.toString().padStart(2, "0")}`
-  }
+  // const formatTime = (seconds: number) => {
+  //   const mins = Math.floor(seconds / 60)
+  //   const secs = seconds % 60
+  //   return `${mins}:${secs.toString().padStart(2, "0")}`
+  // }
 
   const getInitials = (name: string) => {
     return name
@@ -180,13 +398,13 @@ const SoftPhoneApp = () => {
                   <div className="text-center">
                     <div className="mb-6">
                       <div className="w-24 h-24 bg-blue-500 rounded-full flex items-center justify-center mx-auto mb-4 text-white text-xl font-bold">
-                        {getInitials(currentCall.name)}
+                        {getInitials(currentCall.callerName)}
                       </div>
                       <h3 className="text-2xl font-semibold text-gray-900">
-                        {currentCall.name}
+                        {currentCall.callerName}
                       </h3>
                       <p className="text-gray-600 text-lg">
-                        {currentCall.number}
+                        {currentCall.callerNumber}
                       </p>
                       <div className="flex items-center justify-center gap-2 mt-3">
                         <span
@@ -199,7 +417,7 @@ const SoftPhoneApp = () => {
                           {isOnHold ? "On Hold" : "Connected"}
                         </span>
                         <span className="text-sm text-gray-500">
-                          {formatTime(Math.floor(Math.random() * 300) + 60)}
+                          {currentCall.waitTime}
                         </span>
                       </div>
                     </div>
@@ -247,6 +465,11 @@ const SoftPhoneApp = () => {
                   <div className="text-center py-16">
                     <Phone className="w-20 h-20 text-gray-300 mx-auto mb-4" />
                     <p className="text-gray-500 text-lg">No active call</p>
+                    {isQueueLoading && (
+                      <p className="text-gray-400 text-sm mt-2">
+                        Loading queue...
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -265,9 +488,11 @@ const SoftPhoneApp = () => {
                         Incoming Call
                       </h3>
                       <p className="text-lg font-medium text-gray-800 mb-1">
-                        {incomingCall.name}
+                        {incomingCall.callerName}
                       </p>
-                      <p className="text-gray-600">{incomingCall.number}</p>
+                      <p className="text-gray-600">
+                        {incomingCall.callerNumber}
+                      </p>
                     </div>
 
                     <div className="flex space-x-4">
@@ -306,21 +531,21 @@ const SoftPhoneApp = () => {
               <div className="space-y-3">
                 {callQueue.map((caller) => (
                   <div
-                    key={caller.id}
+                    key={caller.callSid}
                     className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
                     onClick={() => switchToCall(caller)}
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center space-x-3">
                         <div className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center text-gray-700 font-medium text-sm">
-                          {getInitials(caller.name)}
+                          {getInitials(caller.callerName)}
                         </div>
                         <div>
                           <p className="font-medium text-gray-900">
-                            {caller.name}
+                            {caller.callerName}
                           </p>
                           <p className="text-sm text-gray-600">
-                            {caller.number}
+                            {caller.callerNumber}
                           </p>
                         </div>
                       </div>
@@ -342,9 +567,15 @@ const SoftPhoneApp = () => {
                   </div>
                 ))}
 
-                {callQueue.length === 0 && (
+                {callQueue.length === 0 && !isQueueLoading && (
                   <div className="text-center py-12">
                     <p className="text-gray-500">No calls in queue</p>
+                  </div>
+                )}
+
+                {isQueueLoading && (
+                  <div className="text-center py-12">
+                    <p className="text-gray-400">Loading queue...</p>
                   </div>
                 )}
               </div>
@@ -378,22 +609,24 @@ const SoftPhoneApp = () => {
                     {callQueue.length}
                   </span>
                 </div>
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm text-gray-600">
+                    Twilio: {twiloDevice ? "Ready" : "Loading"}
+                  </span>
+                  {activeConnection && (
+                    <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">
+                      Audio Connected
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="text-sm text-gray-500">
-                Demo Mode • Next.js + Ably + Twilio
+                Live Demo • DB + Ably + Twilio
               </div>
             </div>
           </div>
         </div>
       </div>
-
-      <Button
-        onClick={() => {
-          channel.publish("main", "Here is my first message!")
-        }}
-      >
-        Publish WS Message
-      </Button>
     </div>
   )
 }
